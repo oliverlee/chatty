@@ -1,12 +1,11 @@
 [package]
-name = "chatty"
-version = "0.1.0"
 authors = ["Oliver Lee <oliverzlee@gmail.com>"]
 edition = "2018"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
+name = "chatty"
+version = "0.1.0"
 [dependencies]
 bytes = "1.0.1"
 mini-redis = "0.4.0"
+tracing = "*"
+tracing-subscriber = "*"
 tokio = { version = "1.2.0", features = ["full"] }

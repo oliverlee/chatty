@@ -96,6 +96,8 @@ dependencies = [
  "bytes",
  "mini-redis",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
