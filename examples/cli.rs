@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::info;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -22,7 +23,27 @@ async fn main() -> Result<()> {
 async fn run_client() -> Result<()> {
     info!("starting client");
 
-    let stream = tokio::net::TcpStream::connect("0.0.0.0:4321").await?;
+    let mut stream = tokio::net::TcpStream::connect("0.0.0.0:4321").await?;
+
+    // Should receive the board state
+    let mut bytes = [0u8; 13];
+    stream.read_exact(&mut bytes).await?;
+
+    assert_eq!(&[0x00, 0x00, 0x00, 0x01], &bytes[0..4]);
+
+    let mut board = Board::default();
+    for i in 0..9 {
+        let r = i/3;
+        let c = i%3;
+        board.cells[r][c] = Cell(match bytes[4 + i] {
+            0x00 => None,
+            0x01 => Some(Player::X),
+            0x02 => Some(Player::O),
+            other => panic!("Invalid board cell byte {:?}", other),
+        });
+    }
+
+    println!("{}", board);
 
     // let (tx, rx) = mpsc::channel(32);
 
@@ -64,7 +85,11 @@ async fn run_server() -> Result<()> {
 
     let manager = tokio::spawn(async move {
         let mut board = Board::default();
+        board.cells[0][1] = Cell(Some(Player::X));
         board.cells[1][1] = Cell(Some(Player::X));
+        board.cells[2][1] = Cell(Some(Player::X));
+        board.cells[2][0] = Cell(Some(Player::O));
+        board.cells[2][2] = Cell(Some(Player::O));
 
         let mut connections =
             HashMap::<std::net::SocketAddr, mpsc::Sender<ConnectionMessage>>::new();
