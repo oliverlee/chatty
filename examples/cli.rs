@@ -80,24 +80,26 @@ async fn run_server() -> Result<()> {
                     }
                     exiting = true;
                     for (_, tx) in connections.iter() {
-                        tx.send(CM::Exit).await.unwrap();
+                        let _ = tx.send(CM::Exit).await;
                     }
                 }
                 MM::Connect(address, tx) => {
                     if !exiting {
-                        tx.send(CM::Board(board.clone())).await.unwrap();
+                        let _ = tx.send(CM::Board(board.clone())).await;
                         connections.insert(address, tx);
+                        info!("{:?}", connections);
                     }
                 }
                 MM::Disconnect(address) => {
                     connections.remove(&address);
+                    info!("{:?}", connections);
                     if exiting && connections.is_empty() {
                         break;
                     }
                 }
                 MM::Broadcast(message) => {
                     for (_, tx) in connections.iter() {
-                        tx.send(message.clone()).await.unwrap();
+                        let _ = tx.send(message.clone()).await;
                     }
                 }
             }
@@ -201,6 +203,8 @@ async fn run_server_connection_loop(
             }
         }
     }
+
+    info!("Disconnected from {}.", address);
 
     manager_tx
         .send(ManagerMessage::Disconnect(address))
