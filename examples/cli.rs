@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{info};
+use tracing::info;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -11,7 +13,7 @@ async fn main() -> Result<()> {
     match args.skip(1).next().as_ref().map(String::as_ref) {
         Some("client") | None => run_client().await?,
         Some("server") => run_server().await?,
-        _ => panic!("Invalid command, specify client|server")
+        _ => panic!("Invalid command, specify client|server"),
     };
 
     Ok(())
@@ -20,33 +22,190 @@ async fn main() -> Result<()> {
 async fn run_client() -> Result<()> {
     info!("starting client");
 
-    let (tx, rx) = mpsc::channel(32);
+    let stream = tokio::net::TcpStream::connect("0.0.0.0:4321").await?;
 
-    let _ = std::thread::Builder::new()
-        .name("stdin".into())
-        .spawn({
-            let tx = tx.clone();
-            move || {
-                let stdin = std::io::stdin();
-                let mut stdin = stdin.lock();
+    // let (tx, rx) = mpsc::channel(32);
 
-                for line in std::io::BufRead::lines(&mut stdin) {
-                    tx.blocking_send(Some(line.unwrap())).unwrap();
-                }
-            }
-        });
+    // let _ = std::thread::Builder::new().name("stdin".into()).spawn({
+    //     let tx = tx.clone();
+    //     move || {
+    //         let stdin = std::io::stdin();
+    //         let mut stdin = stdin.lock();
 
-    tokio::spawn(shutdown(tx));
+    //         for line in std::io::BufRead::lines(&mut stdin) {
+    //             tx.blocking_send(Some(line.unwrap())).unwrap();
+    //         }
+    //     }
+    // });
 
-    run_client_loop(rx).await.unwrap();
+    // tokio::spawn(shutdown(tx));
+
+    // run_client_loop(rx).await.unwrap();
 
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+enum ManagerMessage {
+    Exit,
+    Connect(std::net::SocketAddr, mpsc::Sender<ConnectionMessage>),
+    Disconnect(std::net::SocketAddr),
+    Broadcast(ConnectionMessage),
+}
+
+#[derive(Debug, Clone)]
+enum ConnectionMessage {
+    Exit,
+    Board(Board),
+}
+
 async fn run_server() -> Result<()> {
-    info!("starting server");
+    let (manager_tx, mut manager_rx) = mpsc::channel(2);
+
+    let manager = tokio::spawn(async move {
+        let mut board = Board::default();
+        board.cells[1][1] = Cell(Some(Player::X));
+
+        let mut connections =
+            HashMap::<std::net::SocketAddr, mpsc::Sender<ConnectionMessage>>::new();
+        let mut exiting = false;
+
+        while let Some(msg) = manager_rx.recv().await {
+            use ConnectionMessage as CM;
+            use ManagerMessage as MM;
+            match msg {
+                MM::Exit => {
+                    if connections.is_empty() {
+                        break;
+                    }
+                    exiting = true;
+                    for (_, tx) in connections.iter() {
+                        tx.send(CM::Exit).await.unwrap();
+                    }
+                }
+                MM::Connect(address, tx) => {
+                    if !exiting {
+                        tx.send(CM::Board(board.clone())).await.unwrap();
+                        connections.insert(address, tx);
+                    }
+                }
+                MM::Disconnect(address) => {
+                    connections.remove(&address);
+                    if exiting && connections.is_empty() {
+                        break;
+                    }
+                }
+                MM::Broadcast(message) => {
+                    for (_, tx) in connections.iter() {
+                        tx.send(message.clone()).await.unwrap();
+                    }
+                }
+            }
+        }
+    });
+
+    let shutdown_manager_tx = manager_tx.clone();
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            info!("Initiating graceful shutdown...");
+            shutdown_manager_tx.send(ManagerMessage::Exit).await?;
+        },
+        _ = run_server_loop(manager_tx) => {}
+    };
+
+    manager.await?;
 
     Ok(())
+}
+
+async fn run_server_loop(manager_tx: mpsc::Sender<ManagerMessage>) -> Result<()> {
+    let addr = "0.0.0.0:4321".parse::<std::net::SocketAddr>()?;
+    info!("Attempting to bind to {}...", addr);
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    info!("Accepting connections from {}...", listener.local_addr()?);
+    loop {
+        let (socket, address) = listener.accept().await?;
+        info!("Accepted connection from {}.", address);
+
+        let (tx, rx) = mpsc::channel::<ConnectionMessage>(2);
+
+        tokio::spawn(run_server_connection_loop(
+            socket,
+            address,
+            rx,
+            manager_tx.clone(),
+        ));
+
+        manager_tx
+            .send(ManagerMessage::Connect(address, tx.clone()))
+            .await?;
+    }
+}
+
+async fn run_server_connection_loop(
+    mut socket: tokio::net::TcpStream,
+    address: std::net::SocketAddr,
+    mut rx: mpsc::Receiver<ConnectionMessage>,
+    manager_tx: mpsc::Sender<ManagerMessage>,
+) {
+    let socket = &mut socket;
+
+    loop {
+        let mut buffer = vec![0; 4096];
+
+        tokio::select! {
+            res = rx.recv() => {
+                let msg = match res {
+                    Some(msg) => msg,
+                    None => break,
+                };
+
+                info!("Sending {:?} to {}", msg, address);
+                match msg {
+                    ConnectionMessage::Exit => {
+                        let bytes: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
+                        if let Err(_) = tokio::io::AsyncWriteExt::write_all(socket, &bytes).await {
+                            break;
+                        }
+                    }
+                    ConnectionMessage::Board(board) => {
+                        let mut bytes = [0u8; 13];
+                        bytes[3] = 0x01;
+                        for i in 0..9 {
+                            let r = i / 3;
+                            let c = i % 3;
+                            bytes[4 + i] = match board.cells[r][c].0 {
+                                Some(Player::X) => 0x01,
+                                Some(Player::O) => 0x02,
+                                None => 0x00,
+                            };
+                        }
+                        if let Err(_) = tokio::io::AsyncWriteExt::write_all(socket, &bytes).await {
+                            break;
+                        }
+                    }
+                }
+            }
+            res = tokio::io::AsyncReadExt::read_buf(socket, &mut buffer) => {
+                match res {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        println!("received bytes from client {:?}", &buffer[0..n])
+                    }
+                    Err(e) => {
+                        eprintln!("error read {:?}", e);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    manager_tx
+        .send(ManagerMessage::Disconnect(address))
+        .await
+        .unwrap();
 }
 
 async fn shutdown(tx: mpsc::Sender<Option<String>>) {
@@ -79,8 +238,8 @@ async fn run_client_loop(mut rx: mpsc::Receiver<Option<String>>) -> Result<()> {
                             "O" => Cell(Some(Player::O)),
                             _ => panic!("what the hell"),
                         };
-                    },
-                    _ => println!("X|O row col"),
+                    }
+                    _ => println!("usage: X|O row col"),
                 }
             }
             other => println!("{:?} {}", std::time::Instant::now(), other),
@@ -94,7 +253,7 @@ async fn run_client_loop(mut rx: mpsc::Receiver<Option<String>>) -> Result<()> {
 
 use std::fmt;
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum Player {
     X,
     O,
@@ -106,7 +265,7 @@ impl fmt::Display for Player {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq)]
 struct Cell(Option<Player>);
 
 impl fmt::Display for Cell {
@@ -118,7 +277,7 @@ impl fmt::Display for Cell {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Eq, PartialEq)]
 struct Board {
     cells: [[Cell; 3]; 3],
 }
@@ -136,4 +295,15 @@ impl fmt::Display for Board {
         writeln!(f, "├───┴───┴───┘")?;
         Ok(())
     }
+}
+
+struct RawKind(u32);
+
+impl RawKind {
+    pub const EXIT: Self = Self(0);
+    pub const BOARD: Self = Self(1);
+}
+
+struct RawBoard {
+    pub cells: [[u8; 3]; 3],
 }
