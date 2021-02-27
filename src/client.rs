@@ -11,7 +11,7 @@ pub enum Control {
     Move { row: usize, col: usize },
 }
 
-pub async fn run() -> Result<()> {
+pub async fn run(host: String) -> Result<()> {
     info!("Starting client...");
 
     let (tx, mut rx) = tokio::sync::mpsc::channel(2);
@@ -66,7 +66,7 @@ pub async fn run() -> Result<()> {
         })
         .unwrap();
 
-    let socket = tokio::net::TcpStream::connect("127.0.0.1:4321").await?;
+    let socket = tokio::net::TcpStream::connect(host).await?;
 
     let (reader, writer) = socket.into_split();
 

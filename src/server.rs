@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tracing::info;
 
-pub async fn run() -> Result<()> {
+pub async fn run(host: String) -> Result<()> {
     let (manager_tx, mut manager_rx) = mpsc::channel(2);
 
     let manager = tokio::spawn(async move {
@@ -79,7 +79,7 @@ pub async fn run() -> Result<()> {
             info!("Initiating graceful shutdown...");
             shutdown_manager_tx.send(ManagerMessage::Exit).await?;
         },
-        _ = run_accept_loop(manager_tx) => {}
+        _ = run_accept_loop(host, manager_tx) => {}
     };
 
     manager.await?;
@@ -87,8 +87,8 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
-async fn run_accept_loop(manager_tx: mpsc::Sender<ManagerMessage>) -> Result<()> {
-    let addr = "0.0.0.0:4321".parse::<std::net::SocketAddr>()?;
+async fn run_accept_loop(host: String, manager_tx: mpsc::Sender<ManagerMessage>) -> Result<()> {
+    let addr = host.parse::<std::net::SocketAddr>()?;
     info!("Attempting to bind to {}...", addr);
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
