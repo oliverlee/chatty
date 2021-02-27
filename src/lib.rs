@@ -2,22 +2,23 @@ pub mod board;
 pub mod client;
 pub mod server;
 
-use board::Game;
+use board::{Game, Player};
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
-use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone)]
 pub enum ManagerMessage {
     Exit,
     Connect(std::net::SocketAddr, mpsc::Sender<ConnectionMessage>),
-    Disconnect(std::net::SocketAddr),
-    Move(std::net::SocketAddr, MoveRequest),
+    Disconnect(std::net::SocketAddr, Option<Player>),
+    Move(Player, MoveRequest),
     Broadcast(ConnectionMessage),
 }
 
 #[derive(Debug, Clone)]
 pub enum ConnectionMessage {
     Exit,
+    SetPlayer(Option<Player>),
     Game(Game),
 }
 

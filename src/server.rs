@@ -1,9 +1,9 @@
-use crate::board::{Board, Cell, Player, Game};
+use crate::board::{Board, Cell, Game, Player};
 use crate::{ConnectionMessage, ManagerMessage, Result};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
-use tracing::info;
 use tokio_stream::StreamExt;
+use tracing::info;
 
 pub async fn run() -> Result<()> {
     let (manager_tx, mut manager_rx) = mpsc::channel(2);
@@ -16,11 +16,11 @@ pub async fn run() -> Result<()> {
         let mut exiting = false;
 
         let mut available_players: Vec<Player> = vec![Player::X, Player::O];
-        let mut address_to_player: HashMap::<std::net::SocketAddr, Player> = HashMap::new();
 
         while let Some(msg) = manager_rx.recv().await {
             use ConnectionMessage as CM;
             use ManagerMessage as MM;
+            info!("manager received {:?}", msg);
             match msg {
                 MM::Exit => {
                     if connections.is_empty() {
@@ -33,20 +33,21 @@ pub async fn run() -> Result<()> {
                 }
                 MM::Connect(address, tx) => {
                     if !exiting {
+                        connections.insert(address, tx);
+
+                        let tx = connections.get(&address).unwrap();
+
                         // TODO: don't clone maybe?
                         let _ = tx.send(CM::Game(game.clone())).await;
-                        connections.insert(address, tx);
-                        // can we assign player?
-                        if let Some(p) = available_players.pop() {
-                            address_to_player.insert(address, p);
-                        }
+                        let _ = tx.send(CM::SetPlayer(available_players.pop())).await;
+
                         info!("{:?}", connections);
                     }
                 }
-                MM::Disconnect(address) => {
+                MM::Disconnect(address, player) => {
                     connections.remove(&address);
-                    
-                    if let Some(p) = address_to_player.remove(&address) {
+
+                    if let Some(p) = player {
                         available_players.push(p);
                     }
 
@@ -55,23 +56,11 @@ pub async fn run() -> Result<()> {
                         break;
                     }
                 }
-                MM::Move(address, mov) => {
-                    // figure otu player
-                    if let Some(&p) = address_to_player.get(&address) {
-                        // is it my turn?
-                        if game.current_player == p {
-                            // is the tile empty?
-                            let cell = &mut game.board[(mov.row, mov.col)].0;
-                            if cell.is_none() {
-                                *cell = Some(p);
-
-                                // we did something
-
-                                // broadcast new board state
-                                for (_, tx) in connections.iter() {
-                                    let _ = tx.send(CM::Game(game.clone())).await;
-                                }
-                            }
+                MM::Move(player, mov) => {
+                    // is it my turn?
+                    if let Ok(_) = game.try_move(player, mov.row, mov.col) {
+                        for (_, tx) in connections.iter() {
+                            let _ = tx.send(CM::Game(game.clone())).await;
                         }
                     }
                 }
@@ -127,20 +116,24 @@ async fn run_connection_loop(
     let (reader, writer) = socket.into_split();
 
     // Delimit frames using a length header
-    let reader = tokio_util::codec::FramedRead::new(reader, tokio_util::codec::LengthDelimitedCodec::new());
-    let writer = tokio_util::codec::FramedWrite::new(writer, tokio_util::codec::LengthDelimitedCodec::new());
+    let reader =
+        tokio_util::codec::FramedRead::new(reader, tokio_util::codec::LengthDelimitedCodec::new());
+    let writer =
+        tokio_util::codec::FramedWrite::new(writer, tokio_util::codec::LengthDelimitedCodec::new());
 
     let mut reader = tokio_serde::SymmetricallyFramed::new(
         reader,
         tokio_serde::formats::SymmetricalCbor::<crate::Frame>::default(),
     );
-    
+
     let mut writer = tokio_serde::SymmetricallyFramed::new(
         writer,
         tokio_serde::formats::SymmetricalCbor::<crate::Frame>::default(),
     );
 
     use futures::sink::SinkExt;
+
+    let mut player = None;
 
     loop {
         tokio::select! {
@@ -155,6 +148,7 @@ async fn run_connection_loop(
                     ConnectionMessage::Exit => {
                         break;
                     }
+                    ConnectionMessage::SetPlayer(p) => player = p,
                     ConnectionMessage::Game(game) => {
                         if let Err(e) = writer.send(crate::Frame::Game(game)).await {
                             eprintln!("ouch: {:?}", e);
@@ -164,6 +158,8 @@ async fn run_connection_loop(
                 }
             }
             res = reader.try_next() => {
+                info!("Received {:?}", res);
+
                 // TODO : parse Move
                 match res {
                     Ok(None) => {
@@ -171,7 +167,11 @@ async fn run_connection_loop(
                         break;
                     }
                     Ok(Some(crate::Frame::Move(req))) => {
-                        manager_tx.send(ManagerMessage::Move(address, req)).await.unwrap();
+                        info!("yoyoyo {:?}", player);
+                        if let Some(p) = player {
+                            manager_tx.send(ManagerMessage::Move(p, req)).await.unwrap();
+                        }
+                        // TODO tell client its stupid
                     },
                     Ok(_) => {
                         eprintln!("Unspupporte3d!");
@@ -188,7 +188,7 @@ async fn run_connection_loop(
     info!("Disconnected from {}.", address);
 
     manager_tx
-        .send(ManagerMessage::Disconnect(address))
+        .send(ManagerMessage::Disconnect(address, player))
         .await
         .unwrap();
 }

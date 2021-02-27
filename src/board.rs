@@ -7,6 +7,15 @@ pub enum Player {
     O,
 }
 
+impl Player {
+    pub fn next(&self) -> Self {
+        match self {
+            Player::X => Player::O,
+            Player::O => Player::X,
+        }
+    }
+}
+
 impl fmt::Display for Player {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{:?}", self)
@@ -80,6 +89,22 @@ impl Board {
 
         None
     }
+
+    pub fn try_move(&mut self, player: Player, row: usize, col: usize) -> Result<(), ()> {
+        if row >= 3 || col >= 3 {
+            return Err(());
+        }
+
+        let cell = &mut self.0[row][col].0;
+
+        if cell.is_some() {
+            return Err(());
+        }
+
+        *cell = Some(player);
+
+        Ok(())
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
@@ -94,6 +119,18 @@ impl Game {
             board: Default::default(),
             current_player: Player::X,
         }
+    }
+
+    pub fn try_move(&mut self, player: Player, row: usize, col: usize) -> Result<(), ()> {
+        if self.current_player != player {
+            return Err(());
+        }
+
+        if let Ok(_) = self.board.try_move(player, row, col) {
+            self.current_player = player.next();
+        }
+
+        Ok(())
     }
 }
 
