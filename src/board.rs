@@ -71,11 +71,7 @@ impl Board {
             [(0, 0), (1, 1), (2, 2)],
             [(2, 0), (1, 1), (0, 2)],
         ] {
-            let [a, b, c] = [
-                self[coords[0]].0,
-                self[coords[1]].0,
-                self[coords[2]].0,
-            ];
+            let [a, b, c] = [self[coords[0]].0, self[coords[1]].0, self[coords[2]].0];
             if a.is_some() && a == b && a == c {
                 return a;
             }
