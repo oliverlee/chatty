@@ -1,6 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Player {
     X,
     O,
@@ -12,7 +13,7 @@ impl fmt::Display for Player {
     }
 }
 
-#[derive(Debug, Default, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Cell(pub Option<Player>);
 
 impl fmt::Display for Cell {
@@ -24,7 +25,7 @@ impl fmt::Display for Cell {
     }
 }
 
-#[derive(Debug, Default, Clone, Eq, PartialEq)]
+#[derive(Debug, Default, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Board(pub [[Cell; 3]; 3]);
 
 impl fmt::Display for Board {
@@ -100,5 +101,21 @@ mod tests {
         b[(1, 1)] = Cell(Some(Player::O));
 
         assert_eq!(b.winner(), None);
+    }
+
+    #[test]
+    fn serialize_deserialize() {
+        let mut b1 = Board::default();
+
+        b1[(0, 0)] = Cell(Some(Player::X));
+        b1[(1, 1)] = Cell(Some(Player::X));
+
+        let mut data = Vec::new();
+
+        serde_cbor::to_writer(&mut data, &b1).unwrap();
+
+        let b2 = serde_cbor::from_reader(&*data).unwrap();
+
+        assert_eq!(b1, b2);
     }
 }

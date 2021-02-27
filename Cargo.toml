@@ -3,9 +3,13 @@ authors = ["Oliver Lee <oliverzlee@gmail.com>"]
 edition = "2018"
 name = "chatty"
 version = "0.1.0"
+
 [dependencies]
 bytes = "1.0.1"
 mini-redis = "0.4.0"
 tracing = "*"
 tracing-subscriber = "*"
 tokio = { version = "1.2.0", features = ["full"] }
+
+serde = { version = "1.0.123", features = ["derive"] }
+serde_cbor = "0.11.1"
