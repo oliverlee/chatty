@@ -7,27 +7,32 @@ use tracing::info;
 pub async fn run() -> Result<()> {
     info!("starting client");
 
-    let mut stream = tokio::net::TcpStream::connect("127.0.0.1:4321").await?;
+    let mut socket = tokio::net::TcpStream::connect("127.0.0.1:4321").await?;
 
-    // Should receive the board state
-    let mut bytes = [0u8; 13];
-    stream.read_exact(&mut bytes).await?;
+    let (reader, writer) = socket.into_split();
 
-    assert_eq!(&[0x00, 0x00, 0x00, 0x01], &bytes[0..4]);
+    // Delimit frames using a length header
+    let reader = tokio_util::codec::FramedRead::new(reader, tokio_util::codec::LengthDelimitedCodec::new());
+    let writer = tokio_util::codec::FramedWrite::new(writer, tokio_util::codec::LengthDelimitedCodec::new());
 
-    let mut board = Board::default();
-    for i in 0..9 {
-        let r = i / 3;
-        let c = i % 3;
-        board.0[r][c] = Cell(match bytes[4 + i] {
-            0x00 => None,
-            0x01 => Some(Player::X),
-            0x02 => Some(Player::O),
-            other => panic!("Invalid board cell byte {:?}", other),
-        });
+    let mut reader = tokio_serde::SymmetricallyFramed::new(
+        reader,
+        tokio_serde::formats::SymmetricalCbor::<crate::Frame>::default(),
+    );
+    
+    // let mut writer = tokio_serde::SymmetricallyFramed::new(
+    //     writer,
+    //     tokio_serde::formats::SymmetricalCbor::<crate::Frame>::default(),
+    // );
+
+    use futures::sink::SinkExt;
+    use tokio_stream::StreamExt;
+
+    while let Some(frame) = reader.try_next().await.unwrap() {
+        println!("{:?}", frame);
+
     }
 
-    println!("{}", board);
 
     // let (tx, rx) = mpsc::channel(32);
 

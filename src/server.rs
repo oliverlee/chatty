@@ -1,23 +1,22 @@
-use crate::board::{Board, Cell, Player};
+use crate::board::{Board, Cell, Player, Game};
 use crate::{ConnectionMessage, ManagerMessage, Result};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tracing::info;
+use tokio_stream::StreamExt;
 
 pub async fn run() -> Result<()> {
     let (manager_tx, mut manager_rx) = mpsc::channel(2);
 
     let manager = tokio::spawn(async move {
-        let mut board = Board::default();
-        board.0[0][1] = Cell(Some(Player::X));
-        board.0[1][1] = Cell(Some(Player::X));
-        board.0[2][1] = Cell(Some(Player::X));
-        board.0[2][0] = Cell(Some(Player::O));
-        board.0[2][2] = Cell(Some(Player::O));
+        let mut game = Game::new();
 
         let mut connections =
             HashMap::<std::net::SocketAddr, mpsc::Sender<ConnectionMessage>>::new();
         let mut exiting = false;
+
+        let mut available_players: Vec<Player> = vec![Player::X, Player::O];
+        let mut address_to_player: HashMap::<std::net::SocketAddr, Player> = HashMap::new();
 
         while let Some(msg) = manager_rx.recv().await {
             use ConnectionMessage as CM;
@@ -34,16 +33,46 @@ pub async fn run() -> Result<()> {
                 }
                 MM::Connect(address, tx) => {
                     if !exiting {
-                        let _ = tx.send(CM::Board(board.clone())).await;
+                        // TODO: don't clone maybe?
+                        let _ = tx.send(CM::Game(game.clone())).await;
                         connections.insert(address, tx);
+                        // can we assign player?
+                        if let Some(p) = available_players.pop() {
+                            address_to_player.insert(address, p);
+                        }
                         info!("{:?}", connections);
                     }
                 }
                 MM::Disconnect(address) => {
                     connections.remove(&address);
+                    
+                    if let Some(p) = address_to_player.remove(&address) {
+                        available_players.push(p);
+                    }
+
                     info!("{:?}", connections);
                     if exiting && connections.is_empty() {
                         break;
+                    }
+                }
+                MM::Move(address, mov) => {
+                    // figure otu player
+                    if let Some(&p) = address_to_player.get(&address) {
+                        // is it my turn?
+                        if game.current_player == p {
+                            // is the tile empty?
+                            let cell = &mut game.board[(mov.row, mov.col)].0;
+                            if cell.is_none() {
+                                *cell = Some(p);
+
+                                // we did something
+
+                                // broadcast new board state
+                                for (_, tx) in connections.iter() {
+                                    let _ = tx.send(CM::Game(game.clone())).await;
+                                }
+                            }
+                        }
                     }
                 }
                 MM::Broadcast(message) => {
@@ -90,16 +119,30 @@ async fn run_accept_loop(manager_tx: mpsc::Sender<ManagerMessage>) -> Result<()>
 }
 
 async fn run_connection_loop(
-    mut socket: tokio::net::TcpStream,
+    socket: tokio::net::TcpStream,
     address: std::net::SocketAddr,
     mut rx: mpsc::Receiver<ConnectionMessage>,
     manager_tx: mpsc::Sender<ManagerMessage>,
 ) {
-    let socket = &mut socket;
+    let (reader, writer) = socket.into_split();
+
+    // Delimit frames using a length header
+    let reader = tokio_util::codec::FramedRead::new(reader, tokio_util::codec::LengthDelimitedCodec::new());
+    let writer = tokio_util::codec::FramedWrite::new(writer, tokio_util::codec::LengthDelimitedCodec::new());
+
+    let mut reader = tokio_serde::SymmetricallyFramed::new(
+        reader,
+        tokio_serde::formats::SymmetricalCbor::<crate::Frame>::default(),
+    );
+    
+    let mut writer = tokio_serde::SymmetricallyFramed::new(
+        writer,
+        tokio_serde::formats::SymmetricalCbor::<crate::Frame>::default(),
+    );
+
+    use futures::sink::SinkExt;
 
     loop {
-        let mut buffer = vec![0; 4096];
-
         tokio::select! {
             res = rx.recv() => {
                 let msg = match res {
@@ -110,35 +153,29 @@ async fn run_connection_loop(
                 info!("Sending {:?} to {}", msg, address);
                 match msg {
                     ConnectionMessage::Exit => {
-                        let bytes: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
-                        if let Err(_) = tokio::io::AsyncWriteExt::write_all(socket, &bytes).await {
-                            break;
-                        }
+                        break;
                     }
-                    ConnectionMessage::Board(board) => {
-                        let mut bytes = [0u8; 13];
-                        bytes[3] = 0x01;
-                        for i in 0..9 {
-                            let r = i / 3;
-                            let c = i % 3;
-                            bytes[4 + i] = match board.0[r][c].0 {
-                                Some(Player::X) => 0x01,
-                                Some(Player::O) => 0x02,
-                                None => 0x00,
-                            };
-                        }
-                        if let Err(_) = tokio::io::AsyncWriteExt::write_all(socket, &bytes).await {
+                    ConnectionMessage::Game(game) => {
+                        if let Err(e) = writer.send(crate::Frame::Game(game)).await {
+                            eprintln!("ouch: {:?}", e);
                             break;
                         }
                     }
                 }
             }
-            res = tokio::io::AsyncReadExt::read_buf(socket, &mut buffer) => {
+            res = reader.try_next() => {
+                // TODO : parse Move
                 match res {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        println!("received bytes from client {:?}", &buffer[0..n])
+                    Ok(None) => {
+                        // No more messages in stream
+                        break;
                     }
+                    Ok(Some(crate::Frame::Move(req))) => {
+                        manager_tx.send(ManagerMessage::Move(address, req)).await.unwrap();
+                    },
+                    Ok(_) => {
+                        eprintln!("Unspupporte3d!");
+                    },
                     Err(e) => {
                         eprintln!("error read {:?}", e);
                         break;

@@ -82,6 +82,21 @@ impl Board {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
+pub struct Game {
+    pub board: Board,
+    pub current_player: Player,
+}
+
+impl Game {
+    pub fn new() -> Self {
+        Self {
+            board: Default::default(),
+            current_player: Player::X,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
